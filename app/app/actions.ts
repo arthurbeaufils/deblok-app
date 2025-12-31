@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
 export async function createFolder() {
-  const supabase = createSupabaseServerClient();
+  const supabase = await createSupabaseServerClient();
 
   const { data: userData, error: userErr } = await supabase.auth.getUser();
   if (userErr || !userData.user) {
