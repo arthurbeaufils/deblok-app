@@ -1,325 +1,245 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter, useParams } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 
 type Msg = {
-  id: string;
   role: "user" | "assistant";
   content: string;
-  created_at: string;
 };
 
-export default function FolderPage() {
-  const router = useRouter();
-  const params = useParams();
-  const folderId = params?.folderId as string | undefined;
+function safeJsonParse(s: string) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
 
-  const [loading, setLoading] = useState(true);
-  const [title, setTitle] = useState<string>("Dossier");
-  const [messages, setMessages] = useState<Msg[]>([]);
+/**
+ * Consomme un buffer SSE (format OpenAI realtime/stream via "event:" + "data:")
+ * Appelle onEvent(eventName, dataStr) pour chaque event complet.
+ * Retourne le buffer restant (incomplet).
+ */
+function consumeSSEChunk(
+  buffer: string,
+  onEvent: (eventName: string, dataStr: string) => void
+) {
+  // Les events sont séparés par une ligne vide \n\n
+  const parts = buffer.split("\n\n");
+  const remainder = parts.pop() ?? "";
+
+  for (const part of parts) {
+    const lines = part.split("\n");
+    let eventName = "";
+    let dataStr = "";
+
+    for (const line of lines) {
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      if (line.startsWith("data:")) dataStr = line.slice(5).trim();
+    }
+
+    if (eventName && dataStr) onEvent(eventName, dataStr);
+  }
+
+  return remainder;
+}
+
+export default function FolderChatPage() {
+  const router = useRouter();
+  const params = useParams<{ folderId: string }>();
+  const folderId = params?.folderId ?? "";
+
+  const [messages, setMessages] = useState<Msg[]>([
+    {
+      role: "assistant",
+      content:
+        `Salut ! On attaque.\n\n` +
+        `Donne-moi en 1 phrase : ton objectif, ta cible, ta deadline, et ta contrainte n°1.\n` +
+        `Exemple: "Signer 10 clients B2B (PME) d'ici le 30/04 avec 500 € de budget pub."`,
+    },
+  ]);
   const [input, setInput] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
-  const canSend = useMemo(
-    () => input.trim().length > 0 && !sending,
-    [input, sending]
-  );
-
-  async function requireSession() {
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      router.replace("/login");
-      return null;
-    }
-    return data.session;
-  }
-
-  async function loadAll() {
-    setError(null);
-
-    if (!folderId) {
-      setLoading(false);
-      setError("FolderId manquant dans l’URL.");
-      return;
-    }
-
-    setLoading(true);
-
-    const session = await requireSession();
-    if (!session) return;
-
-    const folderRes = await supabase
-      .from("folders")
-      .select("id, title")
-      .eq("id", folderId)
-      .single();
-
-    if (folderRes.error) {
-      setError(folderRes.error.message);
-      setLoading(false);
-      return;
-    }
-
-    setTitle(folderRes.data?.title || "Dossier");
-
-    const msgRes = await supabase
-      .from("messages")
-      .select("id, role, content, created_at")
-      .eq("folder_id", folderId)
-      .order("created_at", { ascending: true });
-
-    if (msgRes.error) {
-      setError(msgRes.error.message);
-      setLoading(false);
-      return;
-    }
-
-    setMessages((msgRes.data as Msg[]) ?? []);
-    setLoading(false);
-  }
-
-  async function sendMessage() {
-    setError(null);
-    if (!folderId || !canSend) return;
-
-    const session = await requireSession();
-    if (!session) return;
-
-    // ✅ On capture l’état AVANT envoi (pour détecter 1er message)
-    const isFirstMessage = messages.length === 0;
-    const shouldAutoRename =
-      isFirstMessage && (title.trim() === "" || title === "Nouveau dossier");
-
-    setSending(true);
-
-    const userText = input.trim();
-    setInput("");
-
-    // 1) insert user message
-    const insUser = await supabase.from("messages").insert([
-      {
-        folder_id: folderId,
-        user_id: session.user.id,
-        role: "user",
-        content: userText,
-      },
-    ]);
-
-    if (insUser.error) {
-      setError(insUser.error.message);
-      setSending(false);
-      return;
-    }
-
-    // 2) call our server AI endpoint with last N messages
-    const context = [...messages, { id: "local", role: "user" as const, content: userText, created_at: new Date().toISOString() }]
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.content }));
-
-    const aiRes = await fetch("/api/ai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: context }),
-    });
-
-    if (!aiRes.ok) {
-      const t = await aiRes.text();
-      setError("Erreur IA: " + t);
-      setSending(false);
-      return;
-    }
-
-    const { text } = await aiRes.json();
-    const aiText = typeof text === "string" ? text : "Réponse vide.";
-
-    // 3) insert assistant message (real)
-    const insBot = await supabase.from("messages").insert([
-      {
-        folder_id: folderId,
-        user_id: session.user.id,
-        role: "assistant",
-        content: aiText,
-      },
-    ]);
-
-    if (insBot.error) {
-      setError(insBot.error.message);
-      setSending(false);
-      return;
-    }
-
-    // 4) Auto-rename (uniquement si 1er message + titre default)
-    if (shouldAutoRename) {
-      try {
-        const titleRes = await fetch("/api/title", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userText, aiText }),
-        });
-
-        if (titleRes.ok) {
-          const data = await titleRes.json();
-          const newTitle = String(data?.title ?? "").trim();
-
-          if (newTitle) {
-            const up = await supabase
-              .from("folders")
-              .update({ title: newTitle })
-              .eq("id", folderId);
-
-            if (!up.error) setTitle(newTitle);
-          }
-        }
-      } catch {
-        // si ça rate, on s'en fout : ça ne casse rien
-      }
-    }
-
-    // 5) reload
-    await loadAll();
-    setSending(false);
-  }
+  const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    loadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderId]);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, sending]);
 
-  if (loading) {
-    return (
-      <main style={{ padding: 16 }}>
-        <p>Chargement…</p>
-      </main>
-    );
+  const snapshotForApi = useMemo(() => messages, [messages]);
+
+  async function send() {
+    if (!input.trim() || sending) return;
+
+    const userMsg: Msg = { role: "user", content: input.trim() };
+    const snapshot = [...snapshotForApi, userMsg]; // message list envoyée à l'API
+
+    setSending(true);
+    setInput("");
+
+    // ✅ On ajoute UNE SEULE fois: user + placeholder assistant
+    setMessages((m) => [
+      ...m,
+      userMsg,
+      { role: "assistant", content: "DEBLOK écrit…" },
+    ]);
+
+    try {
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folderId,
+          messages: snapshot,
+        }),
+      });
+
+      if (!res.ok || !res.body) throw new Error("Réponse vide (API)");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let buffer = "";
+      let aiText = "";
+
+      const updateAssistant = (text: string) => {
+        setMessages((m) => {
+          const copy = [...m];
+          // met à jour le dernier assistant (placeholder)
+          for (let i = copy.length - 1; i >= 0; i--) {
+            if (copy[i].role === "assistant") {
+              copy[i] = { role: "assistant", content: text };
+              break;
+            }
+          }
+          return copy;
+        });
+      };
+
+      const onEvent = (evtName: string, dataStr: string) => {
+        // On ne garde que les deltas de texte utiles
+        if (evtName === "response.output_text.delta") {
+          const obj = safeJsonParse(dataStr);
+          const delta = obj?.delta;
+          if (typeof delta === "string" && delta.length) {
+            aiText += delta;
+            updateAssistant(aiText);
+          }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        buffer = consumeSSEChunk(buffer, onEvent);
+      }
+
+      // flush final si reste
+      if (buffer.trim().length) {
+        buffer = consumeSSEChunk(buffer + "\n\n", onEvent);
+      }
+
+      if (!aiText.trim()) updateAssistant("⚠️ Aucun texte reçu (stream vide).");
+    } catch (e: any) {
+      setMessages((m) => {
+        const copy = [...m];
+        for (let i = copy.length - 1; i >= 0; i--) {
+          if (copy[i].role === "assistant") {
+            copy[i] = {
+              role: "assistant",
+              content: "❌ Erreur : " + (e?.message || "Erreur IA"),
+            };
+            break;
+          }
+        }
+        return copy;
+      });
+    } finally {
+      setSending(false);
+    }
   }
 
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  }
+
+  // ===============================
+  // UI (design que tu as montré)
+  // ===============================
   return (
-    <main style={{ padding: 16, maxWidth: 720, margin: "0 auto" }}>
-      <button
-        onClick={() => router.push("/app")}
-        style={{
-          border: "1px solid #333",
-          background: "transparent",
-          color: "white",
-          borderRadius: 12,
-          padding: "10px 12px",
-        }}
-      >
-        ← Retour
-      </button>
-
-      <h1 style={{ fontSize: 22, fontWeight: 800, marginTop: 12 }}>
-        {title}
-      </h1>
-
-      {error && (
-        <div
-          style={{
-            marginTop: 12,
-            padding: 12,
-            border: "1px solid #333",
-            borderRadius: 14,
-          }}
-        >
-          Erreur: {error}
-        </div>
-      )}
-
-      <div
-        style={{
-          marginTop: 14,
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        {messages.length === 0 ? (
-          <div
-            style={{
-              padding: 16,
-              border: "1px solid #333",
-              borderRadius: 14,
-              opacity: 0.95,
-              lineHeight: 1.5,
-            }}
+    <div className="min-h-screen bg-black text-white">
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        {/* Header */}
+        <div className="mb-4 flex items-center justify-between">
+          <button
+            onClick={() => router.push("/app")}
+            className="rounded-xl border border-white/15 px-3 py-2 text-sm hover:bg-white/5"
           >
-            <div style={{ fontWeight: 800, marginBottom: 6 }}>DEBLOK</div>
-            <div>
-              Comment je peux t’aider sur ce sujet ?
-              <br />
-              Tu peux me parler d’un problème, d’une idée, d’un mail à écrire ou
-              d’une stratégie.
+            ← Retour
+          </button>
+
+          <div className="text-right">
+            <div className="text-xs text-white/50">Dossier</div>
+            <div className="text-lg font-semibold">{folderId}</div>
+          </div>
+        </div>
+
+        {/* Chat */}
+        <div className="rounded-3xl border border-white/10 bg-white/[0.03]">
+          <div className="h-[65vh] overflow-y-auto px-4 py-4">
+            {messages.map((m, i) => (
+              <div key={i} className="mb-3">
+                <div className="text-[11px] tracking-widest text-white/40">
+                  {m.role === "user" ? "TOI" : "DEBLOK"}
+                </div>
+
+                <div
+                  className={`mt-1 whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm ${
+                    m.role === "user"
+                      ? "bg-white/5 border border-white/10"
+                      : "bg-black/30 border border-white/10"
+                  }`}
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))}
+
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div className="border-t border-white/10 p-4">
+            <div className="flex gap-3">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="Écris ici…"
+                className="min-h-[44px] w-full resize-none rounded-2xl border border-white/10 bg-black/40 px-4 py-3 text-sm outline-none"
+              />
+              <button
+                onClick={send}
+                disabled={sending || !input.trim()}
+                className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black disabled:opacity-50"
+              >
+                Envoyer
+              </button>
+            </div>
+
+            <div className="mt-2 text-xs text-white/35">
+              Entrée = envoyer • Shift+Entrée = aller à la ligne
             </div>
           </div>
-        ) : (
-          messages.map((m) => (
-            <div
-              key={m.id}
-              style={{
-                alignSelf: m.role === "user" ? "flex-end" : "flex-start",
-                maxWidth: "85%",
-                padding: 12,
-                borderRadius: 14,
-                border: "1px solid #333",
-                background: "transparent",
-                color: "white",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {m.role === "assistant" && (
-                <div
-                  style={{
-                    fontWeight: 800,
-                    opacity: 0.7,
-                    fontSize: 12,
-                    marginBottom: 6,
-                  }}
-                >
-                  DEBLOK
-                </div>
-              )}
-              {m.content}
-            </div>
-          ))
-        )}
+        </div>
       </div>
-
-      <div style={{ marginTop: 14, display: "flex", gap: 10 }}>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Écris ici…"
-          style={{
-            flex: 1,
-            padding: 14,
-            borderRadius: 14,
-            border: "1px solid #333",
-            background: "transparent",
-            color: "white",
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") sendMessage();
-          }}
-        />
-        <button
-          onClick={sendMessage}
-          disabled={!canSend}
-          style={{
-            padding: "14px 16px",
-            borderRadius: 14,
-            border: "none",
-            background: "white",
-            color: "black",
-            fontWeight: 800,
-            opacity: canSend ? 1 : 0.5,
-          }}
-        >
-          {sending ? "…" : "Envoyer"}
-        </button>
-      </div>
-    </main>
+    </div>
   );
 }
