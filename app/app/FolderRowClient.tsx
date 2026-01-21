@@ -34,7 +34,7 @@ export default function FolderRowClient({ id, title }: Props) {
     if (!ok) return;
 
     startTransition(async () => {
-      await deleteFolder(id);
+      await deleteFolder({ id });
       router.refresh(); // ✅
     });
   }
