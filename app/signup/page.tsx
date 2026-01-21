@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 
 export default function SignupPage() {
   const router = useRouter();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,14 +15,12 @@ export default function SignupPage() {
     e.preventDefault();
     setMsg(null);
     setLoading(true);
-
     try {
       const { error } = await supabase.auth.signUp({ email, password });
       if (error) throw error;
-
       setMsg("Compte créé ✅ Tu peux te connecter.");
-      // Petite redirection auto après 1s (optionnel)
-      setTimeout(() => router.push("/login"), 1000);
+      // Option : renvoyer vers login
+      setTimeout(() => router.push("/login"), 700);
     } catch (err: any) {
       setMsg(err?.message ?? "Erreur");
     } finally {
@@ -34,7 +31,7 @@ export default function SignupPage() {
   return (
     <main style={{ padding: 20, maxWidth: 420, margin: "0 auto" }}>
       <h1 style={{ fontSize: 28, fontWeight: 800, marginTop: 30 }}>DEBLOK</h1>
-      <p style={{ marginTop: 8, color: "#bbb" }}>Créer un compte</p>
+      <p style={{ marginTop: 6, color: "#bbb" }}>Créer un compte</p>
 
       <form onSubmit={onSignup} style={{ marginTop: 16 }}>
         <input
@@ -84,13 +81,14 @@ export default function SignupPage() {
             opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? "Création..." : "Créer mon compte"}
+          {loading ? "..." : "Créer mon compte"}
         </button>
       </form>
 
       <button
         type="button"
         onClick={() => router.push("/login")}
+        disabled={loading}
         style={{
           width: "100%",
           padding: 14,
@@ -99,10 +97,11 @@ export default function SignupPage() {
           background: "transparent",
           color: "white",
           fontWeight: 700,
-          marginTop: 10,
+          marginTop: 12,
+          opacity: loading ? 0.7 : 1,
         }}
       >
-        ← Retour connexion
+        Retour à la connexion
       </button>
 
       {msg && <p style={{ marginTop: 12, color: "#ddd" }}>{msg}</p>}
