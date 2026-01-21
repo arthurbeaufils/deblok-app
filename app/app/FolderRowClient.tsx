@@ -23,9 +23,9 @@ export default function FolderRowClient({ id, title }: Props) {
     const cleaned = next.trim();
     if (!cleaned) return;
 
-    startTransition(async () => {
-      await renameFolder(id, cleaned);
-      router.refresh(); // ✅ force la sidebar / page à se recalculer
+   startTransition(async () => {
+  await renameFolder({ id, title: cleaned });
+  router.refresh(); // ✅ force la sidebar / page à se recalculer
     });
   }
 
