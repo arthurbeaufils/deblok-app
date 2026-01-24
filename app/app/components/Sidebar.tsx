@@ -19,7 +19,11 @@ function clsx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
-export default function Sidebar({ brand = "DEBLOK", email, folders }: SidebarProps) {
+export default function Sidebar({
+  brand = "DEBLOK",
+  email,
+  folders,
+}: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const [isPending, startTransition] = useTransition();
@@ -128,7 +132,13 @@ export default function Sidebar({ brand = "DEBLOK", email, folders }: SidebarPro
   };
 
   return (
-    <aside className="w-[320px] shrink-0 border-r border-white/10 bg-black text-white h-screen flex flex-col">
+    <aside
+      className={clsx(
+        "w-[320px] shrink-0 border-r border-white/10 bg-black text-white",
+        // iOS: 100dvh > 100vh/h-screen (évite le bouton caché)
+        "h-[100dvh] flex flex-col"
+      )}
+    >
       {/* Header */}
       <div className="p-5 border-b border-white/10">
         <div className="text-lg font-semibold tracking-wide">{brand}</div>
@@ -149,8 +159,8 @@ export default function Sidebar({ brand = "DEBLOK", email, folders }: SidebarPro
         </button>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-auto p-4">
+      {/* List (scroll) */}
+      <div className="flex-1 overflow-y-auto p-4 pb-8">
         <div className="text-xs text-white/50 mb-3">DOSSIERS</div>
 
         <div className="space-y-2">
@@ -228,8 +238,13 @@ export default function Sidebar({ brand = "DEBLOK", email, folders }: SidebarPro
         </div>
       </div>
 
-      {/* Footer */}
-      <div className="p-4 border-t border-white/10">
+      {/* Footer (safe-area iPhone) */}
+      <div
+        className="border-t border-white/10 p-4"
+        style={{
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+        }}
+      >
         <button
           type="button"
           onClick={() => router.push("/logout")}
